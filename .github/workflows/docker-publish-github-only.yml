@@ -1,0 +1,62 @@
+name: Docker Publish - Github Only
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "The tag for the Docker image, e.g., 'latest' or 'main'"
+        required: true
+        type: string
+      platforms:
+        description: "The platforms for Docker image build, e.g., 'linux/amd64,linux/arm64'"
+        required: true
+        type: string
+
+jobs:
+  publish:
+    environment: release-docker
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@main
+        with:
+          show-progress: false
+          submodules: recursive
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@master
+
+      - name: Login to ghcr.io
+        uses: docker/login-action@master
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prepare environment outputs
+        shell: sh
+        run: |
+          set -eu
+
+          echo "DATE_ISO8601=$(date --iso-8601=seconds --utc)" >> "$GITHUB_ENV"
+          echo "GHCR_REPOSITORY=$(echo ${{ github.repository }} | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+          if [ "${{ inputs.tag }}" != "main" ]; then
+            echo "FIXED_TAG=$(echo ${{ github.ref }} | cut -d '/' -f 3)" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build and publish Docker image from Dockerfile
+        uses: docker/build-push-action@master
+        with:
+          context: .
+          platforms: ${{ inputs.platforms }}
+          provenance: true
+          sbom: true
+          push: true
+          labels: |
+            org.opencontainers.image.created=${{ env.DATE_ISO8601 }}
+            org.opencontainers.image.version=${{ inputs.tag == 'main' && github.sha || env.FIXED_TAG }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          tags: |
+            ghcr.io/${{ env.GHCR_REPOSITORY }}:${{ inputs.tag }}
+            ${{ inputs.tag != 'main' && format('ghcr.io/{0}:{1}', env.GHCR_REPOSITORY, env.FIXED_TAG) || '' }}
