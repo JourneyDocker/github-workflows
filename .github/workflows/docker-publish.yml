@@ -70,17 +70,17 @@ jobs:
             FIXED_TAG=$(echo ${{ github.ref }} | cut -d '/' -f 3)
           fi
 
-          TAGS=""
+          tags=""
           if [ "${{ inputs.registry }}" = "both" ] || [ "${{ inputs.registry }}" = "github" ]; then
-            TAGS="${TAGS}ghcr.io/${GHCR_REPOSITORY}:${{ inputs.tag }}\n"
+            tags="${tags}ghcr.io/${GHCR_REPOSITORY}:${{ inputs.tag }}"
             if [ "${{ inputs.tag }}" != "main" ]; then
-              TAGS="${TAGS}ghcr.io/${GHCR_REPOSITORY}:${FIXED_TAG}\n"
+              tags="${tags} ghcr.io/${GHCR_REPOSITORY}:${FIXED_TAG}"
             fi
           fi
           if [ "${{ inputs.registry }}" = "both" ] || [ "${{ inputs.registry }}" = "dockerhub" ]; then
-            TAGS="${TAGS}${DH_REPOSITORY}:${{ inputs.tag }}\n"
+            tags="${tags} ${DH_REPOSITORY}:${{ inputs.tag }}"
             if [ "${{ inputs.tag }}" != "main" ]; then
-              TAGS="${TAGS}${DH_REPOSITORY}:${FIXED_TAG}\n"
+              tags="${tags} ${DH_REPOSITORY}:${FIXED_TAG}"
             fi
           fi
 
@@ -93,7 +93,7 @@ jobs:
             echo "FIXED_TAG=$FIXED_TAG" >> "$GITHUB_ENV"
           fi
           echo "TAGS<<EOF" >> "$GITHUB_ENV"
-          echo -e "$TAGS" >> "$GITHUB_ENV"
+          printf '%s\n' $tags >> "$GITHUB_ENV"
           echo "EOF" >> "$GITHUB_ENV"
 
       - name: Build and publish Docker image from Dockerfile
