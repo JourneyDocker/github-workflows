@@ -119,6 +119,11 @@ jobs:
           repository: ${{ env.DH_REPOSITORY }}
           short-description: ${{ github.event.repository.description }}
 
+      - name: Set lowercase repository name
+        id: repo-name
+        run: |
+          echo "IMAGE_NAME_LC=$(echo ${{ github.event.repository.name }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
       - name: Delete Untagged Packages
         if: ${{ inputs.registry == 'both' || inputs.registry == 'github' }}
         uses: dataaxiom/ghcr-cleanup-action@v1
@@ -128,4 +133,4 @@ jobs:
           delete-ghost-images: true
           delete-orphaned-images: true
           validate: true
-          package: ${{ env.GHCR_REPOSITORY }}
+          package: ${{ env.IMAGE_NAME_LC }}
