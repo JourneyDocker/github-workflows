@@ -30,6 +30,9 @@ jobs:
   publish:
     environment: release-docker
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        platform: ${{ fromJSON(env.PLATFORMS_MATRIX) }}
 
     steps:
       - name: Checkout code
@@ -40,6 +43,16 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@master
+
+      - name: Prepare matrix
+        run: |
+          IFS=',' read -ra PLATFORMS <<< "${{ inputs.platforms }}"
+          matrix="["
+          for p in "${PLATFORMS[@]}"; do
+            matrix+="\"$p\","
+          done
+          matrix="${matrix%,}]"
+          echo "PLATFORMS_MATRIX=$matrix" >> $GITHUB_ENV
 
       - name: Login to ghcr.io
         if: ${{ inputs.registry == 'both' || inputs.registry == 'github' }}
@@ -100,10 +113,12 @@ jobs:
         uses: docker/build-push-action@master
         with:
           context: .
-          platforms: ${{ inputs.platforms }}
+          platforms: ${{ matrix.platform }}
           provenance: true
           sbom: true
           push: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           labels: |
             org.opencontainers.image.created=${{ env.DATE_ISO8601 }}
             org.opencontainers.image.version=${{ inputs.tag == 'main' && github.sha || env.FIXED_TAG }}
