@@ -27,12 +27,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.prepare.outputs.matrix }}
+    steps:
+      - name: Prepare matrix
+        id: prepare
+        run: |
+          IFS=',' read -ra PLATFORMS <<< "${{ inputs.platforms }}"
+          matrix="{\"include\":["
+          for p in "${PLATFORMS[@]}"; do
+            matrix+="{\"platform\":\"$p\"},"
+          done
+          matrix="${matrix%,}]}"
+          echo "matrix=$matrix" >> $GITHUB_OUTPUT
+
   publish:
     environment: release-docker
     runs-on: ubuntu-latest
+    needs: prepare
     strategy:
-      matrix:
-        platform: ${{ fromJSON(env.PLATFORMS_MATRIX) }}
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
 
     steps:
       - name: Checkout code
@@ -43,16 +59,6 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@master
-
-      - name: Prepare matrix
-        run: |
-          IFS=',' read -ra PLATFORMS <<< "${{ inputs.platforms }}"
-          matrix="["
-          for p in "${PLATFORMS[@]}"; do
-            matrix+="\"$p\","
-          done
-          matrix="${matrix%,}]"
-          echo "PLATFORMS_MATRIX=$matrix" >> $GITHUB_ENV
 
       - name: Login to ghcr.io
         if: ${{ inputs.registry == 'both' || inputs.registry == 'github' }}
