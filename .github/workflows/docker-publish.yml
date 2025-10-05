@@ -104,6 +104,8 @@ jobs:
           provenance: true
           sbom: true
           push: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           labels: |
             org.opencontainers.image.created=${{ env.DATE_ISO8601 }}
             org.opencontainers.image.version=${{ inputs.tag == 'main' && github.sha || env.FIXED_TAG }}
