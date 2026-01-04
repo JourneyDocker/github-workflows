@@ -16,6 +16,11 @@ on:
         required: false
         default: 'both'
         type: string
+      dockerfile-location:
+        description: "The build context directory for the Docker image, relative to the repository root"
+        required: false
+        default: '.'
+        type: string
     secrets:
       DOCKERHUB_USERNAME:
         required: false
@@ -99,7 +104,7 @@ jobs:
       - name: Build and publish Docker image from Dockerfile
         uses: docker/build-push-action@v6
         with:
-          context: .
+          context: ${{ inputs.dockerfile-location }}
           platforms: ${{ inputs.platforms }}
           provenance: true
           sbom: true
