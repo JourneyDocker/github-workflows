@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       tag:
-        description: "The tag for the Docker image, e.g., 'latest' or 'main'"
+        description: "The tag for the Docker image"
         required: true
         type: string
       platforms:
@@ -61,18 +61,45 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Docker metadata
+      - name: Prepare environment and images
+        id: prep
+        shell: bash
+        run: |
+          set -eu
+
+          # Safely lowercase repository names for Docker compliance
+          GHCR_REPOSITORY=$(echo "ghcr.io/${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          DH_REPOSITORY=$(echo "${{ secrets.DOCKERHUB_USERNAME }}/${{ github.event.repository.name }}" | tr '[:upper:]' '[:lower:]')
+          IMAGE_NAME_LC=$(echo "${{ github.event.repository.name }}" | tr '[:upper:]' '[:lower:]')
+
+          # Export variables needed by later steps
+          echo "DH_REPOSITORY=$DH_REPOSITORY" >> "$GITHUB_ENV"
+          echo "IMAGE_NAME_LC=$IMAGE_NAME_LC" >> "$GITHUB_ENV"
+
+          # Build the list of base images depending on the user's registry input
+          IMAGES=""
+          if [ "${{ inputs.registry }}" = "both" ] || [ "${{ inputs.registry }}" = "github" ]; then
+            IMAGES="${IMAGES}${GHCR_REPOSITORY}\n"
+          fi
+          if [ "${{ inputs.registry }}" = "both" ] || [ "${{ inputs.registry }}" = "dockerhub" ]; then
+            IMAGES="${IMAGES}${DH_REPOSITORY}\n"
+          fi
+
+          # Output multiline image list for the metadata-action
+          echo "images<<EOF" >> "$GITHUB_OUTPUT"
+          echo -e "$IMAGES" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Extract Docker metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
-          images: |
-            ${{ (inputs.registry == 'both' || inputs.registry == 'github') && format('ghcr.io/{0}', github.repository) || '' }}
-            ${{ (inputs.registry == 'both' || inputs.registry == 'dockerhub') && format('{0}/{1}', secrets.DOCKERHUB_USERNAME, github.event.repository.name) || '' }}
+          images: ${{ steps.prep.outputs.images }}
           tags: |
             type=raw,value=${{ inputs.tag }}
-            ${{ inputs.tag != 'main' && format('type=raw,value={0}', github.ref_name) || '' }}
-          labels: |
-            org.opencontainers.image.version=${{ inputs.tag == 'main' && github.sha || github.ref_name }}
+            type=ref,event=branch,enable=${{ inputs.tag != 'main' }}
+            type=ref,event=tag,enable=${{ inputs.tag != 'main' }}
+            type=ref,event=pr,enable=${{ inputs.tag != 'main' }}
 
       - name: Build and publish Docker image from Dockerfile
         uses: docker/build-push-action@v7
@@ -84,8 +111,9 @@ jobs:
           push: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          labels: ${{ steps.meta.outputs.labels }}
           tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
 
       - name: Update DockerHub repository description
         if: ${{ (inputs.registry == 'both' || inputs.registry == 'dockerhub') && inputs.tag == 'main' }}
@@ -93,13 +121,8 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-          repository: ${{ format('{0}/{1}', secrets.DOCKERHUB_USERNAME, github.event.repository.name) }}
+          repository: ${{ env.DH_REPOSITORY }}
           short-description: ${{ github.event.repository.description }}
-
-      - name: Set lowercase repository name
-        id: repo-name
-        run: |
-          echo "IMAGE_NAME_LC=$(echo ${{ github.event.repository.name }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
 
       - name: Delete Untagged Packages
         if: ${{ inputs.registry == 'both' || inputs.registry == 'github' }}
