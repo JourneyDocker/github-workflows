@@ -1,5 +1,18 @@
 name: Docker Publish
 
+# Build a Docker image and publish it to GHCR and/or DockerHub.
+#
+# Example caller:
+#   jobs:
+#     publish:
+#       uses: JourneyDocker/github-workflows/.github/workflows/docker-publish.yml@main
+#       with:
+#         tag: main
+#         platforms: linux/amd64
+#         registry: github
+#         context: .
+#         file: deploy/Dockerfile
+
 on:
   workflow_call:
     inputs:
@@ -16,10 +29,15 @@ on:
         required: false
         default: 'both'
         type: string
-      dockerfile-location:
-        description: "Build context directory or path to a Dockerfile, relative to the repository root. If a file path is given, its directory is used as context (e.g. 'docker/Dockerfile.prod')"
+      context:
+        description: "Build context directory, relative to the repository root"
         required: false
         default: '.'
+        type: string
+      file:
+        description: "Path to the Dockerfile, relative to the build context"
+        required: false
+        default: 'Dockerfile'
         type: string
     secrets:
       DOCKERHUB_USERNAME:
@@ -36,22 +54,99 @@ jobs:
     environment: release-docker
     runs-on: ubuntu-latest
 
-    env:
-      PUSH_GHCR: ${{ inputs.registry == 'both' || inputs.registry == 'github' }}
-      PUSH_DOCKERHUB: ${{ inputs.registry == 'both' || inputs.registry == 'dockerhub' }}
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
         with:
           show-progress: false
           submodules: recursive
+          persist-credentials: false
+
+      # Single source of truth: validates inputs and resolves registries,
+      # image names, and the Docker build context/file for every later step.
+      - name: Resolve configuration
+        id: config
+        shell: bash
+        env:
+          REGISTRY: ${{ inputs.registry }}
+          CONTEXT: ${{ inputs.context }}
+          FILE: ${{ inputs.file }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # --- Registries ---------------------------------------------------
+          case "$REGISTRY" in
+            both)      ghcr=true;  dockerhub=true  ;;
+            github)    ghcr=true;  dockerhub=false ;;
+            dockerhub) ghcr=false; dockerhub=true  ;;
+            *)
+              echo "::error::Invalid 'registry' input '$REGISTRY'. Expected 'both', 'dockerhub', or 'github'."
+              exit 1
+              ;;
+          esac
+
+          if [ "$dockerhub" = true ] && { [ -z "$DOCKERHUB_USERNAME" ] || [ -z "$DOCKERHUB_TOKEN" ]; }; then
+            echo "::error::Publishing to DockerHub requires the DOCKERHUB_USERNAME and DOCKERHUB_TOKEN secrets."
+            exit 1
+          fi
+
+          # --- Image names (Docker requires lowercase) ----------------------
+          repo_name="${GITHUB_REPOSITORY#*/}"
+          repo_name="${repo_name,,}"
+
+          images=()
+          dockerhub_repo=""
+          if [ "$ghcr" = true ]; then
+            images+=("ghcr.io/${GITHUB_REPOSITORY,,}")
+          fi
+          if [ "$dockerhub" = true ]; then
+            dockerhub_repo="${DOCKERHUB_USERNAME,,}/${repo_name}"
+            images+=("$dockerhub_repo")
+          fi
+
+          # --- Build context and Dockerfile ---------------------------------
+          context="${CONTEXT%/}"
+          context="${context:-.}"
+
+          if [ ! -d "$context" ]; then
+            echo "::error::Build context directory not found: '$context'."
+            exit 1
+          fi
+
+          # 'file' is relative to the build context
+          if [ "$context" = . ]; then
+            file="$FILE"
+          else
+            file="$context/$FILE"
+          fi
+
+          if [ ! -f "$file" ]; then
+            echo "::error::Dockerfile not found at '$file'."
+            exit 1
+          fi
+
+          # --- Outputs ------------------------------------------------------
+          {
+            echo "ghcr=$ghcr"
+            echo "dockerhub=$dockerhub"
+            echo "dockerhub-repo=$dockerhub_repo"
+            echo "package=$repo_name"
+            echo "context=$context"
+            echo "file=$file"
+            echo "images<<EOF"
+            printf '%s\n' "${images[@]}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Resolved context='$context' file='$file' images='${images[*]}'"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
       - name: Login to ghcr.io
-        if: ${{ env.PUSH_GHCR == 'true' }}
+        if: ${{ steps.config.outputs.ghcr == 'true' }}
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -59,94 +154,28 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Login to DockerHub
-        if: ${{ env.PUSH_DOCKERHUB == 'true' }}
+        if: ${{ steps.config.outputs.dockerhub == 'true' }}
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Resolve image names
-        id: images
-        shell: bash
-        env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-        run: |
-          set -eu
-
-          # Docker requires lowercase repository names
-          repo_name="${GITHUB_REPOSITORY#*/}"
-          repo_name="${repo_name,,}"
-
-          images=()
-          if [ "$PUSH_GHCR" = true ]; then
-            images+=("ghcr.io/${GITHUB_REPOSITORY,,}")
-          fi
-          if [ "$PUSH_DOCKERHUB" = true ]; then
-            images+=("${DOCKERHUB_USERNAME,,}/${repo_name}")
-          fi
-
-          if [ "${#images[@]}" -eq 0 ]; then
-            echo "::error::Invalid 'registry' input. Expected 'both', 'dockerhub', or 'github'."
-            exit 1
-          fi
-
-          {
-            echo "package=${repo_name}"
-            echo "dockerhub=${DOCKERHUB_USERNAME,,}/${repo_name}"
-            echo "images<<EOF"
-            printf '%s\n' "${images[@]}"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-
       - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ${{ steps.images.outputs.images }}
+          images: ${{ steps.config.outputs.images }}
           tags: |
             type=raw,value=${{ inputs.tag }}
             type=ref,event=branch,enable=${{ inputs.tag != 'main' }}
             type=ref,event=tag,enable=${{ inputs.tag != 'main' }}
             type=ref,event=pr,enable=${{ inputs.tag != 'main' }}
 
-      - name: Resolve Docker context and file
-        id: docker-path
-        shell: bash
-        env:
-          LOCATION: ${{ inputs.dockerfile-location }}
-        run: |
-          set -eu
-
-          path="${LOCATION%/}"
-          path="${path:-.}"
-
-          is_file=false
-          if [ -f "$path" ]; then
-            is_file=true
-          elif [ ! -d "$path" ]; then
-            # Path doesn't exist (yet): infer from the file name
-            case "$(basename "$path")" in
-              Dockerfile*|*.Dockerfile|*.dockerfile) is_file=true ;;
-            esac
-          fi
-
-          if [ "$is_file" = true ]; then
-            context="$(dirname "$path")"
-            file="$path"
-          else
-            context="$path"
-            file="$path/Dockerfile"
-          fi
-
-          echo "context=$context" >> "$GITHUB_OUTPUT"
-          echo "file=$file" >> "$GITHUB_OUTPUT"
-          echo "Resolved context='$context' file='$file' from input='$LOCATION'"
-
       - name: Build and publish Docker image
         uses: docker/build-push-action@v7
         with:
-          context: ${{ steps.docker-path.outputs.context }}
-          file: ${{ steps.docker-path.outputs.file }}
+          context: ${{ steps.config.outputs.context }}
+          file: ${{ steps.config.outputs.file }}
           platforms: ${{ inputs.platforms }}
           provenance: true
           sbom: true
@@ -158,16 +187,16 @@ jobs:
           annotations: ${{ steps.meta.outputs.annotations }}
 
       - name: Update DockerHub repository description
-        if: ${{ env.PUSH_DOCKERHUB == 'true' && inputs.tag == 'main' }}
+        if: ${{ steps.config.outputs.dockerhub == 'true' && inputs.tag == 'main' }}
         uses: peter-evans/dockerhub-description@v5
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-          repository: ${{ steps.images.outputs.dockerhub }}
+          repository: ${{ steps.config.outputs.dockerhub-repo }}
           short-description: ${{ github.event.repository.description }}
 
       - name: Delete untagged packages
-        if: ${{ env.PUSH_GHCR == 'true' }}
+        if: ${{ steps.config.outputs.ghcr == 'true' }}
         uses: dataaxiom/ghcr-cleanup-action@v1
         continue-on-error: true
         with:
@@ -175,4 +204,4 @@ jobs:
           delete-ghost-images: true
           delete-orphaned-images: true
           validate: true
-          package: ${{ steps.images.outputs.package }}
+          package: ${{ steps.config.outputs.package }}
